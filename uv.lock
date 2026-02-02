@@ -10,6 +10,9 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
 
+[manifest]
+overrides = [{ name = "tensorflow-io-gcs-filesystem", marker = "sys_platform == 'linux'", specifier = ">=0.37.1" }]
+
 [[package]]
 name = "absl-py"
 version = "2.4.0"
@@ -2808,7 +2811,6 @@ dependencies = [
     { name = "six", marker = "sys_platform == 'win32'" },
     { name = "tensorboard", version = "2.15.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32'" },
     { name = "tensorflow-estimator", marker = "sys_platform == 'win32'" },
-    { name = "tensorflow-io-gcs-filesystem", marker = "sys_platform == 'win32'" },
     { name = "termcolor", marker = "sys_platform == 'win32'" },
     { name = "typing-extensions", marker = "sys_platform == 'win32'" },
     { name = "wrapt", marker = "sys_platform == 'win32'" },
@@ -2874,11 +2876,6 @@ dependencies = [
 wheels = [
     { url = "https://files.pythonhosted.org/packages/46/60/35b55620e35da8a7150d96330c01840d62588d9ae465e7237b1c3a4f3a2c/tensorflow_hub-0.16.0-py2.py3-none-any.whl", hash = "sha256:0ad294616d176d77e19a21f87ac9379ae36725b4d596302d9f7d01327848beea", size = 30755, upload-time = "2024-01-22T17:18:07.027Z" },
 ]
-
-[[package]]
-name = "tensorflow-io-gcs-filesystem"
-version = "0.37.1"
-source = { registry = "https://pypi.org/simple" }
 
 [[package]]
 name = "tensorstore"

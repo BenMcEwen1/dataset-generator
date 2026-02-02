@@ -5,7 +5,7 @@ def main():
     bacpipe.config.audio_dir = r'test/'
 
     # to modify the models you want to run, do
-    bacpipe.config.models = ['perch_v2']
+    bacpipe.config.models = ['birdnet']
     # if you do not have the checkpoint yet, it will be automatically
     # downloaded and stored locally
     bacpipe.config.dashboard = False
