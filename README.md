@@ -8,9 +8,9 @@
 ## Setup
 Install dependencies using `uv sync`
 
-**You will need linux (e.g. WSL) to run perch_v2*
+**You will need linux (e.g. WSL) to run perch_v2*. Let me know if you run into setup issues.
 
-For an overview of the data format and existing pipeline see `generator.ipynb`.
+For an overview of the data format and examples of usage see the notebooks for BirdSet (HSN) `generator_HSN.ipynb` and ESC50 `generator_ESC50.ipynb`.
 
 ### Run on server
 

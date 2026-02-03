@@ -19,3 +19,7 @@ HSN_BASEAL/
 
 # Dataset
 HSN/HSN_train_shard_0001.tar.gz
+ESC50/audio
+
+# Generated output
+ESC50_BASEAL/

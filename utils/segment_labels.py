@@ -3,13 +3,18 @@ Segment-wise label splitter for audio metadata.
 
 This module converts file-level audio annotations (with onset/offset times)
 into segment-level labels suitable for training models on fixed-length audio chunks.
+
+Supports multiple dataset formats through the adapter system (see adapters.py).
 """
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from dataclasses import dataclass
+
+if TYPE_CHECKING:
+    from .adapters import DatasetAdapter
 
 
 @dataclass
@@ -293,7 +298,8 @@ def filter_by_existing_audio(
 def create_labels_csv(
     segment_df: pd.DataFrame,
     validation_fraction: float = 0.1,
-    random_seed: int = 42
+    random_seed: int = 42,
+    validation_column: Optional[str] = None
 ) -> pd.DataFrame:
     """
     Create a labels.csv file in the expected format.
@@ -304,16 +310,215 @@ def create_labels_csv(
         segment_df: DataFrame with segment-level metadata
         validation_fraction: Fraction of samples to use for validation
         random_seed: Random seed for reproducibility
+        validation_column: If provided, use this column for validation split
 
     Returns:
         DataFrame with columns: filename, label, validation
     """
-    np.random.seed(random_seed)
+    if validation_column and validation_column in segment_df.columns:
+        validation = segment_df[validation_column]
+    else:
+        np.random.seed(random_seed)
+        validation = np.random.random(len(segment_df)) < validation_fraction
 
     labels_df = pd.DataFrame({
         "filename": segment_df["filename"],
         "label": segment_df["label"],
-        "validation": np.random.random(len(segment_df)) < validation_fraction
+        "validation": validation
+    })
+
+    return labels_df
+
+
+# =============================================================================
+# Adapter-based processing functions
+# =============================================================================
+
+def split_row_into_segments_with_adapter(
+    row: pd.Series,
+    adapter: "DatasetAdapter",
+    config: SegmentConfig
+) -> list[dict]:
+    """
+    Split a single metadata row into segment-level entries using an adapter.
+
+    This function handles both event-annotated audio (like HSN) and
+    pre-segmented audio (like ESC-50) through the adapter interface.
+
+    Args:
+        row: A row from the metadata DataFrame
+        adapter: Dataset adapter for extracting labels and events
+        config: Segmentation configuration
+
+    Returns:
+        List of dictionaries, one per segment
+    """
+    segments = []
+    file_length = adapter.get_audio_length(row)
+    filepath = Path(row["filepath"])
+    stem = filepath.stem
+
+    # Get label for this file
+    file_label = adapter.get_label(row)
+
+    # Get events and clusters (may be None for pre-segmented datasets)
+    events = adapter.get_events(row)
+    event_clusters = adapter.get_event_clusters(row)
+
+    # Get extra metadata to propagate
+    extra_metadata = adapter.get_extra_metadata(row)
+
+    # Handle pre-segmented audio (no events, entire clip is one segment)
+    if adapter.is_presegmented():
+        # For pre-segmented audio, check if we need to re-segment
+        # based on model requirements
+        if config.segment_duration >= file_length:
+            # Keep as single segment (common case for ESC-50 with BirdNET 3s -> will be windowed)
+            # The embedding generation handles the actual windowing
+            segment_filename = f"{stem}_000_{int(file_length):03d}.wav"
+            segment_data = {
+                "filename": segment_filename,
+                "original_filepath": row["filepath"],
+                "segment_start": 0.0,
+                "segment_end": file_length,
+                "label": file_label,
+                "has_event": True,  # Entire clip is the event for pre-segmented
+                "segment_events": [[0.0, file_length]],
+                "segment_event_clusters": [],
+                **extra_metadata
+            }
+            segments.append(segment_data)
+        else:
+            # Need to split pre-segmented audio into smaller segments
+            # Each segment gets the same label (entire original clip has that label)
+            num_segments = int(np.ceil(file_length / config.segment_duration))
+            for i in range(num_segments):
+                seg_start = i * config.segment_duration
+                seg_end = min(seg_start + config.segment_duration, file_length)
+
+                segment_filename = f"{stem}_{int(seg_start):03d}_{int(seg_end):03d}.wav"
+                segment_data = {
+                    "filename": segment_filename,
+                    "original_filepath": row["filepath"],
+                    "segment_start": seg_start,
+                    "segment_end": seg_end,
+                    "label": file_label,
+                    "has_event": True,
+                    "segment_events": [[0.0, seg_end - seg_start]],
+                    "segment_event_clusters": [],
+                    **extra_metadata
+                }
+                segments.append(segment_data)
+        return segments
+
+    # Handle event-annotated audio (HSN-style)
+    num_segments = int(np.ceil(file_length / config.segment_duration))
+
+    # Convert events to numpy array if needed
+    if events is not None and not isinstance(events, np.ndarray):
+        events = np.array(events)
+    if events is None:
+        events = np.array([])
+
+    if event_clusters is not None and not isinstance(event_clusters, np.ndarray):
+        event_clusters = np.array(event_clusters)
+    if event_clusters is None:
+        event_clusters = np.array([])
+
+    for i in range(num_segments):
+        seg_start = i * config.segment_duration
+        seg_end = seg_start + config.segment_duration
+
+        segment_filename = f"{stem}_{int(seg_start):03d}_{int(seg_end):03d}.wav"
+
+        # Find overlapping events
+        overlapping_event_indices = get_events_in_segment(events, seg_start, seg_end, config)
+
+        if len(overlapping_event_indices) > 0:
+            label = file_label
+            has_event = True
+
+            # Get the overlapping event times (relative to segment)
+            segment_events = []
+            segment_clusters = []
+            for idx in overlapping_event_indices:
+                event = events[idx]
+                rel_onset = max(0, event[0] - seg_start)
+                rel_offset = min(config.segment_duration, event[1] - seg_start)
+                segment_events.append([rel_onset, rel_offset])
+                if len(event_clusters) > idx:
+                    segment_clusters.append(event_clusters[idx])
+        else:
+            label = config.no_event_label
+            has_event = False
+            segment_events = []
+            segment_clusters = []
+
+        segment_data = {
+            "filename": segment_filename,
+            "original_filepath": row["filepath"],
+            "segment_start": seg_start,
+            "segment_end": seg_end,
+            "label": label,
+            "has_event": has_event,
+            "segment_events": segment_events,
+            "segment_event_clusters": segment_clusters,
+            **extra_metadata
+        }
+        segments.append(segment_data)
+
+    return segments
+
+
+def split_metadata_with_adapter(
+    df: pd.DataFrame,
+    adapter: "DatasetAdapter",
+    config: Optional[SegmentConfig] = None
+) -> pd.DataFrame:
+    """
+    Split entire metadata DataFrame into segment-level entries using an adapter.
+
+    Args:
+        df: Input DataFrame with file-level metadata
+        adapter: Dataset adapter for processing rows
+        config: Segmentation configuration (uses defaults if None)
+
+    Returns:
+        DataFrame with one row per segment
+    """
+    if config is None:
+        config = SegmentConfig()
+
+    all_segments = []
+
+    for idx, row in df.iterrows():
+        segments = split_row_into_segments_with_adapter(row, adapter, config)
+        all_segments.extend(segments)
+
+    return pd.DataFrame(all_segments)
+
+
+def create_labels_csv_with_adapter(
+    segment_df: pd.DataFrame,
+    adapter: "DatasetAdapter"
+) -> pd.DataFrame:
+    """
+    Create a labels.csv file using adapter's validation strategy.
+
+    Args:
+        segment_df: DataFrame with segment-level metadata
+        adapter: Dataset adapter with validation configuration
+
+    Returns:
+        DataFrame with columns: filename, label, validation
+    """
+    # Get validation mask from adapter
+    validation_mask = adapter.get_validation_mask(segment_df)
+
+    labels_df = pd.DataFrame({
+        "filename": segment_df["filename"],
+        "label": segment_df["label"],
+        "validation": validation_mask
     })
 
     return labels_df
